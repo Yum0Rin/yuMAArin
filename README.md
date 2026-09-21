@@ -5,7 +5,7 @@
 
 > 名字 = **yu** + **MAA** + **rin**（我的 ID）。
 
-![截图](docs/screenshot.png)
+![截图](docs/screenshot-20260922.png)
 
 ---
 
@@ -101,7 +101,7 @@ yumaarin.py                 主程序（GTK4 单文件）
 install.sh                  安装脚本
 scripts/yumaarin-autostart.sh   开机自启包装（等 Waydroid 就绪）
 scripts/backup-config.sh        备份运行配置
-docs/screenshot.png         截图
+docs/screenshot-20260922.png         截图
 ```
 
 ---
