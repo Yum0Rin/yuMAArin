@@ -447,6 +447,7 @@ class App(Gtk.Application):
         GLib.idle_add(_restore_split)
         GLib.idle_add(self.auto_check_update)
         GLib.idle_add(self.refresh_version)
+        GLib.timeout_add_seconds(2, self._sync_view_buttons)
         GLib.timeout_add_seconds(30, self._timer_tick)
         GLib.idle_add(self._maybe_run_daily)
 
@@ -480,9 +481,7 @@ class App(Gtk.Application):
         left.append(self.ver_label); left.append(self.addr_label)
         hb.set_title_widget(left)
         #   <Button Content="📌" Command="ToggleTopMostCommand" />  —— GTK4/Wayland 无窗口置顶，暂缺
-        #   <Grid Grid.Column="1"> （内联我们自己的动作按钮）
-        self.btn_stop = Gtk.Button(label="停止"); self.btn_stop.set_sensitive(False)
-        self.btn_stop.connect("clicked", self.on_stop); hb.pack_end(self.btn_stop)
+        #   <Grid Grid.Column="1"> （内联我们自己的动作按钮；「停止」只在长草页底部，避免重复）
         b = Gtk.Button(label="检查更新"); b.connect("clicked", lambda _b: self.run_bg_update()); hb.pack_end(b)
         b = Gtk.Button(label="检测连接"); b.connect("clicked", self.on_check); hb.pack_end(b)
         win.set_titlebar(hb)
@@ -1109,12 +1108,48 @@ class App(Gtk.Application):
 
         mid = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.detail = Gtk.ScrolledWindow(); self.detail.set_vexpand(True); mid.append(self.detail)
+        # 「显示游戏窗口」：勾上→跑前打开 Waydroid 窗口看着；不勾→静默后台跑（状态记忆）
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self.show_win = Gtk.CheckButton(label="显示游戏窗口")
+        self.show_win.set_active(bool(load_state().get("show_game_window", False)))
+        self.show_win.connect("toggled", self._on_show_win_toggle)
+        bar.append(self.show_win)
+        sdot = Gtk.Label(label="ⓘ"); sdot.add_css_class("info-dot"); sdot.set_valign(Gtk.Align.CENTER)
+        sdot.set_tooltip_text(
+            "显示游戏窗口：勾选＝立即打开 Waydroid 窗口，且以后每次运行前自动打开（看着跑）；\n"
+            "取消＝以后静默后台跑。已打开的窗口请点它自己的 × 关闭（Waydroid 无法命令行隐藏）。")
+        bar.append(sdot)
+        self._scrcpy_proc = None; self._waydroid_proc = None
+        self.tg_scrcpy = Gtk.ToggleButton()
+        sbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        self._scrcpy_lbl = Gtk.Label(label="监工(scrcpy)"); sbox.append(self._scrcpy_lbl)
+        sdot2 = Gtk.Label(label="ⓘ"); sdot2.add_css_class("info-dot"); sdot2.set_valign(Gtk.Align.CENTER)
+        sdot2.set_tooltip_text(
+            "监工：用 scrcpy 打开小窗镜像（可手动操作）；再点一下＝关掉。关掉窗口不影响任务。\n"
+            "已限负载（720p/15fps/2Mbps/无音频）。⚠ 别频繁反复开关：scrcpy 解码压在核显上，\n"
+            "曾出现 Intel 核显挂死导致整机卡死；长时间「看着跑」更推荐用左边的「显示游戏窗口」\n"
+            "（Waydroid 原生窗口，少一路解码，更省）。")
+        sbox.append(sdot2); self.tg_scrcpy.set_child(sbox)
+        self.tg_scrcpy.connect("toggled", self._toggle_scrcpy); bar.append(self.tg_scrcpy)
+        bar.set_halign(Gtk.Align.START)
+        mid.append(bar)
         bb = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10); bb.set_halign(Gtk.Align.CENTER)
+        STOPTIP = ("停止：立即停止（发终止信号，可能打断当前操作）。\n"
+                   "等待并停止：等当前这一步 / 这场战斗结束后再停，不继续后续任务（更稳妥）。")
         for lab, fn, cls in [("开始", self.on_run_selected, "suggested-action"),
                              ("停止", self.on_stop, None),
                              ("等待并停止", self.on_wait_stop, None)]:
-            b = Gtk.Button(label=lab); b.set_size_request(110, 46)
+            b = Gtk.Button(); b.set_size_request(110, 46)
             if cls: b.add_css_class(cls)
+            if lab == "等待并停止":                          # ⓘ 放进按钮内部（文字 + ⓘ）
+                hb2 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+                hb2.append(Gtk.Label(label=lab))
+                idot = Gtk.Label(label="ⓘ"); idot.add_css_class("info-dot"); idot.set_valign(Gtk.Align.CENTER)
+                idot.set_tooltip_text(STOPTIP); hb2.append(idot); b.set_child(hb2)
+            else:
+                b.set_label(lab)
+            if lab == "停止":
+                self.btn_stop = b; b.set_sensitive(False)   # 底部这枚才是运行期的停止键
             b.connect("clicked", fn); bb.append(b)
         mid.append(bb)
 
@@ -1412,7 +1447,8 @@ class App(Gtk.Application):
             json.dump({"client_type": client, "tasks": tasks},
                       f, ensure_ascii=False, indent=2)
         self.logln(f"已写入 {TASKS_FILE}（{len(tasks)} 个任务）")
-        self.save_queue()   # 开跑即存一次，防止重启丢设置
+        self.save_queue()            # 开跑即存一次，防止重启丢设置
+        self._maybe_show_game_window()
         self.set_progress(mods)
         self.run_maa(["run","--batch","ui"])
 
@@ -1483,6 +1519,87 @@ class App(Gtk.Application):
                 row["status"] = {"Completed": "完成", "Failed": "失败", "Error": "失败"}.get(status, status)
                 row["dur"] = str(dur)
                 self._render_progress()
+
+    def _save_show_win(self, on):
+        try:
+            st = load_state(); st["show_game_window"] = bool(on); save_state(st)
+        except Exception: pass
+
+    def _on_show_win_toggle(self, btn):
+        on = btn.get_active()
+        self._save_show_win(on)
+        if on: self._open_waydroid()   # 勾上即刻打开，之后每次运行前也会自动打开
+
+    def _maybe_show_game_window(self):
+        if not load_state().get("show_game_window", False):
+            self.logln("静默运行（不打开 Waydroid 窗口）"); return
+        try:
+            import shutil
+            exe = shutil.which("waydroid") or "/usr/bin/waydroid"
+            subprocess.Popen([exe, "show-full-ui"], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+            self.logln("已打开 Waydroid 窗口（看着跑）")
+        except Exception as e:
+            self.logln(f"[打开 Waydroid 窗口失败] {e}")
+
+    def _kill_proc(self, proc):
+        # 先优雅（SIGINT，scrcpy 会自行清理设备端 server），3s 后仍在则强杀
+        if not proc or proc.poll() is not None: return
+        import signal, threading, time
+        try: os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+        except Exception:
+            try: proc.terminate()
+            except Exception: pass
+        def _force():
+            time.sleep(3)
+            if proc.poll() is None:
+                try: os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except Exception:
+                    try: proc.kill()
+                    except Exception: pass
+        threading.Thread(target=_force, daemon=True).start()
+
+    def _toggle_scrcpy(self, btn):
+        if btn.get_active():
+            import shutil
+            cand = os.path.expanduser("~/.local/bin/scrcpy")
+            exe = cand if os.path.exists(cand) else (shutil.which("scrcpy") or "/usr/bin/scrcpy")
+            if not os.path.exists(exe) and not shutil.which(exe):
+                self.logln("未安装 scrcpy（已放 ~/.local/bin/scrcpy 或 sudo apt install scrcpy）")
+                btn.set_active(False); return
+            addr = self._current_address()
+            try:
+                env = dict(os.environ, PATH=os.path.expanduser("~/.local/bin") + ":" + os.environ.get("PATH", ""))
+                # 降负载（核显容易挂）：720p / 15fps / 2Mbps / 无音频
+                self._scrcpy_proc = subprocess.Popen(
+                    [exe, "-s", addr, "--no-audio", "-m", "720", "--max-fps=15", "-b", "2M",
+                     "--window-title", "yuMAArin 监工", "--window-width=360"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, env=env)
+                self._scrcpy_lbl.set_text("不监工了")
+                self.logln(f"已打开 scrcpy 监工（{addr}）；关掉窗口不影响任务")
+            except Exception as e:
+                self.logln(f"[scrcpy 启动失败] {e}"); btn.set_active(False)
+        else:
+            self._kill_proc(getattr(self, "_scrcpy_proc", None)); self._scrcpy_proc = None
+            self._scrcpy_lbl.set_text("监工(scrcpy)")
+
+    def _open_waydroid(self):
+        # waydroid show-full-ui 只是通知会话显示、命令随即退出；窗口由会话进程绘制，
+        # 无法用命令行隐藏（只能在窗口自己的 × 关闭）。故这里只做「显示」。
+        import shutil
+        exe = shutil.which("waydroid") or "/usr/bin/waydroid"
+        try:
+            subprocess.Popen([exe, "show-full-ui"], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+            self.logln("已请求显示 Waydroid 窗口；关闭请点窗口自己的 ×（不影响任务）")
+        except Exception as e:
+            self.logln(f"[Waydroid 启动失败] {e}")
+
+    def _sync_view_buttons(self):
+        # 同步 scrcpy 开关状态（窗口被外部关掉时复位按钮）
+        if getattr(self, "_scrcpy_proc", None) and self._scrcpy_proc.poll() is not None:
+            self._scrcpy_proc = None; self.tg_scrcpy.set_active(False)
+        return True
 
     def on_run_selected(self, _b):
         self.write_and_run(self.modules)
@@ -1598,6 +1715,7 @@ class App(Gtk.Application):
                 argv += v.split() if multi else [v]
             else:
                 argv += [name, v]
+        self._maybe_show_game_window()
         self.run_maa(argv)
 
     # ---------- 设置页 ----------
